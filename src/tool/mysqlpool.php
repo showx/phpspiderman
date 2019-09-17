@@ -6,7 +6,7 @@
  * 得会自己释放链接
  * 解决mysql has gone away
  */
-namespace phpspiderman;
+namespace phpspiderman\tool;
 Class mysqlpool
 {
     

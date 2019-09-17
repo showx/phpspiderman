@@ -21,4 +21,7 @@ return [
     'worker' => 4,
     'phpspider_version' => '1.0',
     'debug' => '1',
+    //可开启定时采集，采集最新的数据入站
+    //检查频率秒
+    'time' => '0',
 ];

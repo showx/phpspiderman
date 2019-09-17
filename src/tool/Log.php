@@ -3,7 +3,7 @@
  * 简单日志记录库
  * Author:show
  */
-namespace phpspiderman;
+namespace phpspiderman\tool;
 
 class Log
 {

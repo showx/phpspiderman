@@ -4,7 +4,7 @@
  * 下载、添加水印等功能
  * Author:show
  */
-namespace phpspiderman;
+namespace phpspiderman\content;
 
 class image
 {

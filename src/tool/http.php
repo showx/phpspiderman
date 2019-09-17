@@ -3,7 +3,7 @@
  * http网络请求类
  * Author:show
  */
-namespace phpspiderman;
+namespace phpspiderman\tool;
 
 class http
 {
