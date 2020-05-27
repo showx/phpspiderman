@@ -4,7 +4,7 @@
  * Author:show
  */
 namespace phpspiderman\tool;
-Class mysqlpool
+Class RedisPool
 {
     
 }

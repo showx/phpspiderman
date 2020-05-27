@@ -41,4 +41,12 @@ Class phpspiderman
         }
     }
 
+    /**
+     * 开始爬取
+     */
+    public function crawl()
+    {
+
+    }
+
 }
