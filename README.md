@@ -1,6 +1,6 @@
 # phpspiderman
 php爬虫
-基于workerman做的数据抓取。致力做到简单易用。多站点采集利器。
+简单的php爬虫,重新编写一下。
 
 # 注
 本工具只为技术研究，请勿使用非法用途。
@@ -11,13 +11,7 @@ php爬虫
    pcntl
    libevent
    posix
- linux
  mysql
  redis
- 
+ swoole
 
-# 使用教程
-    略。
-
-# 版本计划
-![avatar](高性能爬虫1.0.png)
