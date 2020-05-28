@@ -8,5 +8,11 @@ namespace phpspiderman\content;
 
 class image
 {
-    
+    /**
+     * 添加水印
+     */
+    public static function water()
+    {
+
+    }
 }
