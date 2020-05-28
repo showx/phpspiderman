@@ -5,120 +5,14 @@
  */
 namespace phpspiderman\tool;
 
-class http
+define("lr","\n");
+
+class Http
 {
     public static $timeout = 30;
     public static $user_agent = 'Mozilla/5.0 (Windows; U; Windows NT 5.2; zh-CN; rv:1.9.2.13) Gecko/20101203 Firefox/3.6.13';
-    /**
-     * http get函数
-     * @parem $url
-     * @parem $$timeout=30
-     * @parem $referer_url=''
-     */
-    public static function get($url,$referer_url='')
-    {
-        $startt = time();
-        if (function_exists('curl_init'))
-        {
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::$timeout);
-            if( $referer_url != '' )  curl_setopt($ch, CURLOPT_REFERER, $referer_url);
-            curl_setopt($ch, CURLOPT_USERAGENT, self::$user_agent);
-            $result = curl_exec($ch);
-            $errno  = curl_errno($ch);
-            curl_close($ch);
-            return $result;
-        }
-        else
-        {
-            $Referer = ($referer_url=='' ?  '' : "Referer:{$referer_url}\r\n");
-            $context =
-                array('http' =>
-                    array('method' => 'GET',
-                        'header' => 'User-Agent:'.self::$user_agent."\r\n".$Referer
-                    )
-                );
-            $contextid = stream_context_create($context);
-            $sock = fopen($url, 'r', false, $contextid);
-            stream_set_timeout($sock, self::$timeout);
-            if($sock)
-            {
-                $result = '';
-                while (!feof($sock)) {
-                    //$result .= stream_get_line($sock, 10240, "\n");
-                    $result .= fgets($sock, 4096);
-                    if( time() - $startt > self::$timeout ) {
-                        return '';
-                    }
-                }
-                fclose($sock);
-            }
-        }
-        return $result;
-    }
-
-    /**
-     * 向指定网址发送post请求
-     * @parem $url
-     * @parem $query_str
-     * @parem $type=''
-     * @parem $$timeout=5
-     * @return string
-     */
-    public static function post($url, $query_str, $type='')
-    {
-        $startt = time();
-        if(is_array($query_str))
-        {
-            $query_str = http_build_query($query_str);
-        }
-        if( function_exists('curl_init') )
-        {
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::$timeout);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_USERAGENT, self::$user_agent );
-            if($type=='json')
-            {
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'Content-Type: application/json; charset=utf-8',
-                ]);
-            }
-            curl_setopt($ch, CURLOPT_POST, 1);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $query_str);
-            $result = curl_exec($ch);
-            curl_close($ch);
-            return $result;
-        }
-        else
-        {
-            $context =
-                array('http' =>
-                    array('method' => 'POST',
-                        'header' => 'Content-type: application/x-www-form-urlencoded'."\r\n".
-                            'User-Agent: '.self::$user_agent."\r\n".
-                            'Content-length: ' . strlen($query_str),
-                        'content' => $query_str));
-            $contextid = stream_context_create($context);
-            $sock = fopen($url, 'r', false, $contextid);
-            if ($sock)
-            {
-                $result = '';
-                while (!feof($sock))
-                {
-                    $result .= fgets($sock, 4096);
-                    if( time() - $startt > self::$timeout ) {
-                        return '';
-                    }
-                }
-                fclose($sock);
-            }
-        }
-        return $result;
-    }
+    public $proxy_url = "";
+    public $port = 443; //80
 
     /**
      * 设置代理地址
@@ -133,9 +27,14 @@ class http
      */
     public function getProxy()
     {
-        $data = file_get_contents($this->proxy_url);
-        $data = trim($data);
-        $tmp = explode(":",$data);
+        if($this->proxy_url)
+        {
+            $data = file_get_contents($this->proxy_url);
+            $data = trim($data);
+            $tmp = explode(":",$data);
+        }else{
+            $tmp = [];
+        }
         return $tmp;
     }
 
@@ -157,7 +56,7 @@ class http
     {
         go(function () use ($path,$header,$json_array) {
             $body = json_encode($json_array);
-            $cli = new \Swoole\Coroutine\Http2\Client($this->url2, 443, true);
+            $cli = new \Swoole\Coroutine\Http2\Client($this->url2, $this->port, true);
             $cli->set([
                 'timeout' => -1, //这里感觉设置5秒会比较好，超时即重新跑取 
                 'ssl_host_name' => $this->url2,
@@ -184,15 +83,21 @@ class http
      */
     public function getContent2($path='',$header,$json_array,$return=20)
     {
+        //需判断类型的
         $body = json_encode($json_array);
-        $cli = new \Swoole\Coroutine\Http\Client($this->url2, 443,true);
+        $cli = new \Swoole\Coroutine\Http\Client($this->url2, $this->port,true);
         $cli->setHeaders($header);
         $cli->set([
             'timeout' => 10,
-            'socks5_host'     =>  $this->proxyip,
-            'socks5_port'     =>  $this->proxyport
         ]);
-        $tmp = $cli->post($path,$body);
+        if($this->proxyip)
+        {
+            $cli->set([
+                'socks5_host'     =>  $this->proxyip,
+                'socks5_port'     =>  $this->proxyport
+            ]);
+        }
+        $cli->post($path,$body);
         $response =  $cli->body;
         $cli->close();
         if($cli->statusCode!='200') //200或400才是正确的返回
@@ -206,17 +111,12 @@ class http
                 $response =  $this->getContent2($path,$header,$json_array,$return);
             }
         }
-        echo "{$path}|{$body} {$cli->statusCode}".lr; 
-        if(empty($response))
-        {
-            $response = $this->getContent($this->url.$path,$header,$json_array);
-        }
+        // echo "{$path}|{$body} {$cli->statusCode}".lr;
         return $response;
     }
 
     /**
-     * 获取快手列表
-     * 普通方式 stream_context_create
+     * 普通方式 curl_setopt
      */
     public function getContent($url,$header,$requestData,$type='json')
     {
@@ -224,23 +124,26 @@ class http
         {
             $body = json_encode($requestData);
         }
-        $this->i++;
-        if(!empty($this->proxyip))
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        // curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::$timeout);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        if($header['User-Agent'])
         {
-            $context['http']['proxy'] = "tcp://{$this->proxyip}:{$this->proxyport}";
-            $context['http']['request_fulluri'] = true;
+            curl_setopt($ch, CURLOPT_USERAGENT, $header['User-Agent'] );
+            unset($header['User-Agent']);
         }
-		$contextid = stream_context_create($context);
-        $sock = fopen($url, 'r', false, $contextid);
-        $result = '';
-		if ($sock)
-		{
-			while (!feof($sock))
-			{
-				$result .= fgets($sock, 4096);
-			}
-			fclose($sock);
+        if($header['Cookie'])
+        {
+            curl_setopt($ch , CURLOPT_COOKIE, $header['Cookie']);
+            unset($header['Cookie']);
         }
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        $result = curl_exec($ch);
+        curl_close($ch);
+
         return $result;
     }
 

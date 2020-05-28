@@ -15,7 +15,8 @@
     },
     "autoload": {
         "psr-4": {
-            "phpspiderman\\": "src/"
+            "phpspiderman\\": "src/",
+            "demo\\": "demo/"
         }
     }
 }

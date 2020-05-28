@@ -24,10 +24,9 @@ class MysqlPool
      * MysqlPool constructor.
      * @param int $size 连接池的尺寸
      */
-    function __construct($size = 20)
+    function __construct($config,$size = 20)
     {
         $this->pool = new \Swoole\Coroutine\Channel($size);
-        $config = \phpshow\lib\config::get("db.mysql")['master'];
         for ($i = 0; $i < $size; $i++)
         {
             $mysql = new \Swoole\Coroutine\Mysql();

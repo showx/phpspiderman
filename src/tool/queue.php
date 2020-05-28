@@ -6,7 +6,7 @@
  */
 namespace phpspiderman\tool;
 
-class queue
+class Queue
 {
     
 }
