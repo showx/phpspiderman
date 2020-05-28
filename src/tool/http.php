@@ -58,53 +58,6 @@ class http
         }
         return $result;
     }
-    /**
-     * 代理获取数据
-     */
-    public static function getProxy($url,$page_cookie='',$proxy_type='2',$proxy_url='',$referer_url = "http://www.baidu.com/")
-    {
-        // 要访问的目标页面
-//        $url = "http://baidu.com";
-        // 代理服务器
-//        $proxyServer = "http://ip:port";
-        // 隧道身份信息
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_HTTPPROXYTUNNEL, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-
-        if($referer_url)
-        {
-            curl_setopt($ch, CURLOPT_REFERER, $referer_url);
-        }
-        // 设置代理服务器
-        if($proxy_type == '1')
-        {
-            curl_setopt($ch, CURLOPT_PROXYTYPE, 0); //http
-        }else{
-            curl_setopt($ch, CURLOPT_PROXYTYPE, 5); //sock5
-        }
-        if($proxy_url)
-        {
-            curl_setopt($ch, CURLOPT_PROXY, $proxy_url);
-        }
-        // 设置隧道验证信息
-        curl_setopt($ch, CURLOPT_PROXYAUTH, CURLAUTH_BASIC);
-        //设置useragent
-        curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; .NET CLR 2.0.50727;)");
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-        curl_setopt($ch, CURLOPT_HEADER, true);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        if($page_cookie)
-        {
-            curl_setopt($ch,CURLOPT_COOKIE,$page_cookie);
-        }
-        $result = curl_exec($ch);
-        curl_close($ch);
-        return $result;
-    }
-
 
     /**
      * 向指定网址发送post请求
@@ -137,9 +90,7 @@ class http
             curl_setopt($ch, CURLOPT_POST, 1);
             curl_setopt($ch, CURLOPT_POSTFIELDS, $query_str);
             $result = curl_exec($ch);
-//            $errno  = curl_errno($ch);
             curl_close($ch);
-            //echo " $url & $query_str <hr /> $errno , $result ";
             return $result;
         }
         else
@@ -170,117 +121,147 @@ class http
     }
 
     /**
-     * 向指定网址post文件
-     * @parem $url
-     * @parem $files  文件数组 array('fieldname' => filepathname ...)
-     * @param $fields 附加的数组  array('fieldname' => content ...)
-     * @parem $$timeout=30
-     * @return string
+     * 设置代理地址
      */
-    public function post_file($url, $files, $fields)
+    public function setProxy($url)
     {
-        $startt = time();
-        if( function_exists('curl_init') )
-        {
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::$timeout);
-            curl_setopt($ch, CURLOPT_USERAGENT, self::$user_agent );
-            $need_class = class_exists('\CURLFile') ? true : false;
-            foreach($files as $k => $v)
+        $this->proxy_url = $url;
+    }
+
+    /**
+     * 获取代理服务器的ip
+     */
+    public function getProxy()
+    {
+        $data = file_get_contents($this->proxy_url);
+        $data = trim($data);
+        $tmp = explode(":",$data);
+        return $tmp;
+    }
+
+    /**
+     * 切换代理ip地址
+     */
+    public function transferIp()
+    {
+        $ip_data = $this->getProxy();
+        echo "TransferIP:{$ip_data['0']}:{$ip_data['1']}".lr;
+        $this->proxyip = $ip_data['0'];
+        $this->proxyport = $ip_data['1'];
+    }
+
+    /**
+     * swoole http2 协程
+     */
+    public function getContent3($path='',$header,$json_array)
+    {
+        go(function () use ($path,$header,$json_array) {
+            $body = json_encode($json_array);
+            $cli = new \Swoole\Coroutine\Http2\Client($this->url2, 443, true);
+            $cli->set([
+                'timeout' => -1, //这里感觉设置5秒会比较好，超时即重新跑取 
+                'ssl_host_name' => $this->url2,
+            ]);
+            $cli->connect();
+            $req = new \swoole_http2_request;
+            $req->method = 'POST';
+            $req->path = $path;
+            $req->headers = $header;
+            $req->data = $body;
+            $cli->send($req);
+            $response = $cli->recv();
+            if($response->data)
             {
-                if ( $need_class ) {
-                    $fields[$k] = new CURLFile(realpath($v));
-                } else {
-                    $fields[$k] = '@' . realpath($v);
-                }
+                return $response->data;
+            }else{
+                return "";
             }
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $fields);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            $result = curl_exec($ch);
-            curl_close($ch);
-            return $result;
-        }
-        else
-        {
-            return false;
-        }
+        });
     }
 
     /**
-     * rolling 表求数据
-     * @param $urls
+     * swoole http 1协程
      */
-    public static function rolling($urls)
+    public function getContent2($path='',$header,$json_array,$return=20)
     {
-        $mh = curl_multi_init();
-        foreach($urls as $key=>$url)
+        $body = json_encode($json_array);
+        $cli = new \Swoole\Coroutine\Http\Client($this->url2, 443,true);
+        $cli->setHeaders($header);
+        $cli->set([
+            'timeout' => 10,
+            'socks5_host'     =>  $this->proxyip,
+            'socks5_port'     =>  $this->proxyport
+        ]);
+        $tmp = $cli->post($path,$body);
+        $response =  $cli->body;
+        $cli->close();
+        if($cli->statusCode!='200') //200或400才是正确的返回
         {
-            $ch{$key} = curl_init();
-            curl_setopt($ch{$key}, CURLOPT_URL, $url);
-            curl_setopt($ch{$key}, CURLOPT_HEADER, 0);
-            curl_setopt($ch{$key}, CURLOPT_CONNECTTIMEOUT, 2);
-            curl_setopt($ch{$key}, CURLOPT_TIMEOUT, 5);
-            curl_multi_add_handle($mh,$ch{$key});
-        }
-        $active = null;
-        do {
-            $mrc = curl_multi_exec($mh, $active);
-        } while ($mrc == CURLM_CALL_MULTI_PERFORM);
-
-        while ($active && $mrc == CURLM_OK) {
-            //这一段是核心
-//            while (curl_multi_exec($mh, $active) === CURLM_CALL_MULTI_PERFORM);
-            curl_multi_exec($mh, $active);
-            $tmp = curl_multi_select($mh);  //经常-1的原因
-            if ($tmp != -1) {
-                do {
-                    $mrc = curl_multi_exec($mh, $active);
-                } while ($mrc == CURLM_CALL_MULTI_PERFORM);
+            //重试采集
+            //协程失败，改用正常的
+            if($return>0)
+            {
+                echo "{$path} | {$body} 进行重试:{$return}次".lr;
+                $return = --$return;
+                $response =  $this->getContent2($path,$header,$json_array,$return);
             }
         }
-        foreach($urls as $key=>$val)
+        echo "{$path}|{$body} {$cli->statusCode}".lr; 
+        if(empty($response))
         {
-            curl_multi_remove_handle($mh, $ch{$key});
+            $response = $this->getContent($this->url.$path,$header,$json_array);
         }
-        curl_multi_close($mh);
+        return $response;
     }
 
     /**
-     * rolling 表求数据
-     * @param $urls array
+     * 获取快手列表
+     * 普通方式 stream_context_create
      */
-    public static function rolling2($urls)
+    public function getContent($url,$header,$requestData,$type='json')
     {
-        if(empty($urls))
+        if($type == 'json')
         {
-            return 'empty';
+            $body = json_encode($requestData);
         }
-        $mh = curl_multi_init();
-        foreach ($urls as $i => $url) {
-            $conn[$i] = curl_init($url);
-            curl_setopt($conn[$i], CURLOPT_RETURNTRANSFER, 1);
-            curl_multi_add_handle($mh, $conn[$i]);
+        $this->i++;
+        if(!empty($this->proxyip))
+        {
+            $context['http']['proxy'] = "tcp://{$this->proxyip}:{$this->proxyport}";
+            $context['http']['request_fulluri'] = true;
         }
-        do {
-            $status = curl_multi_exec($mh, $active);
-            $info = curl_multi_info_read($mh);
-            if (false !== $info) {
-//                var_dump($info);
-            }
-        } while ($status === CURLM_CALL_MULTI_PERFORM || $active);
+		$contextid = stream_context_create($context);
+        $sock = fopen($url, 'r', false, $contextid);
+        $result = '';
+		if ($sock)
+		{
+			while (!feof($sock))
+			{
+				$result .= fgets($sock, 4096);
+			}
+			fclose($sock);
+        }
+        return $result;
+    }
 
-        foreach ($urls as $i => $url) {
-            $res[$i] = curl_multi_getcontent($conn[$i]);
-            curl_close($conn[$i]);
-        }
-        $res2 = [];
-        foreach($res as $i=>$v)
-        {
-            $res2[$urls[$i]] = $v;
-        }
-        unset($res);
-        return $res2;
+    /**
+     * 设置头部信息
+     */
+    public function setHeader($urlroot,$cookie)
+    {
+        $header = [
+            'Accept'=>'application/json',
+            'Origin'=>$urlroot,
+            'Referer'=>$urlroot,
+            'Connection'=>'keep-alive',
+            'Content-Type'=>'application/json;charset=UTF-8',
+            'Sec-Fetch-Mode'=>'cors',
+            'User-Agent'=>'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36',
+            'Sec-Fetch-Site'=>'same-origin',
+            'Accept-Encoding'=>'gzip, deflate, br',
+            'Accept-Language'=>'zh-CN,zh;q=0.9,en;q=0.8',
+            'Cookie'=>$cookie
+        ];
+        return $header;
     }
 }
