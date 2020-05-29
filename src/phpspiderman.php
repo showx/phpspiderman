@@ -32,7 +32,8 @@ Class phpspiderman
     public $handleList = null;
     // 获取详情页内容
     public $handleContent = null;
-
+    // 采集进程数
+    public $worker_num = 4;
     public function __construct($config)
     {
         $this->urlconfig = $config;
@@ -40,6 +41,10 @@ Class phpspiderman
         if(isset($this->urlconfig['proxyUrl']))
         {
             $this->ProxyUrl = $this->urlconfig['proxyUrl'];
+        }
+        if(isset($this->urlconfig['worker_num']))
+        {
+            $this->worker_num = $this->urlconfig['worker_num'];
         }
         $this->Http = new Http;
     }
@@ -62,8 +67,11 @@ Class phpspiderman
      */
     public function crawl()
     {
+        if($this->urlconfig['type'] != 2)
+        {
+            die("目前只支持api json采集!!");
+        }
         //目前只有类型为type 2 ,即api json模式
-
         if($this->ProxyUrl)
         {
             $this->Http->setProxy($this->ProxyUrl);
@@ -84,7 +92,7 @@ Class phpspiderman
             });
             $wg->wait();
         });
-        $list = json_decode($list,true);
+        $list = \phpspiderman\content\json::decode($list);
         if($list)
         {
             if(!empty($this->urlconfig['totalPageField']))
@@ -95,22 +103,23 @@ Class phpspiderman
             }
             //从第一页开始采集
             $page = 1;
-            // $sum_page = 1; // 为了测试，这里设定一下
+            $sum_page = 6; // 为了测试，这里设定一下
             while($page<=$sum_page)
             {
-                //这里改成多进程
                 $process = new \swoole_process(function() use($header,$page,$sum_page,$json_array){
-                    //重新切换一下ip
-                    $this->Http->transferIp();
                     echo "----------page {$page} / {$sum_page}------------".lr;
                     $json_array['currentPage'] = $page;
-                    \Co\run(function () use($header,$json_array) {
-                        go(function(){
-                            $this->pool = new \phpspiderman\tool\MysqlPool($this->urlconfig['mysqlconfig'],20);
-                        });
+                    \Co\run(function () use($page,$header,$json_array) {
                         $wg = new \Swoole\Coroutine\WaitGroup();
                         $wg->add();
-                        go(function() use($header,$json_array){
+                        go(function() use($wg){
+                            $this->pool = new \phpspiderman\tool\MysqlPool($this->urlconfig['mysqlconfig'],20);
+                            $wg->done();
+                        });
+                        $wg->wait();
+                        $wg->add();
+                        go(function() use($page,$header,$json_array){
+                            $mysql = $this->pool->get();
                             if($this->handleList)
                             {
                                 $list = \call_user_func($this->handleList,$this,$header,$json_array);
@@ -119,7 +128,6 @@ Class phpspiderman
                                     if($this->handleContent)
                                     {
                                         $data = \call_user_func($this->handleContent,$listData);
-                                        $mysql = $this->pool->get();
                                         $arr_key = array_keys($data);
                                         $arr_value = array_values($data);
                                         $keyss = implode('`,`',$arr_key);
@@ -127,12 +135,11 @@ Class phpspiderman
                                         //分号模式可能插入有问题
                                         $sql = "insert into {$this->urlconfig['table']} (`{$keyss}`) values('{$valuess}') ";
                                         $t = $mysql->query($sql);
-                                        echo  $data['userId']."|{1}|query return:".$t.lr;
-                                        $this->pool->put($mysql);
+                                        echo  $data['userId']."|{$page}|query return:".$t.lr;
                                     }
                                 }
                             }
-
+                            $this->pool->put($mysql);
                         });
                         $wg->wait();
                     });
@@ -140,9 +147,16 @@ Class phpspiderman
                 },false,true);
                 $process->name("kuaishou_page".$page);
                 $process->start();
-                \swoole_process::wait();
+                if($page % $this->worker_num == 0)
+                {
+                    //重新切换一下ip
+                    $this->Http->transferIp();
+                    echo '-----------------------------------------------------------------';
+                    \swoole_process::wait();
+                }
                 $page++;
             }
+            \swoole_process::wait();
         }
     }
 }
