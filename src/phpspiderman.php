@@ -108,7 +108,7 @@ Class phpspiderman
             {
                 $process = new \swoole_process(function() use($header,$page,$sum_page,$json_array){
                     echo "----------page {$page} / {$sum_page}------------".lr;
-                    $json_array['currentPage'] = $page;
+                    $json_array[$this->urlconfig['PageField']] = $page;
                     \Co\run(function () use($page,$header,$json_array) {
                         $wg = new \Swoole\Coroutine\WaitGroup();
                         $wg->add();
@@ -145,7 +145,7 @@ Class phpspiderman
                     });
                     
                 },false,true);
-                $process->name("kuaishou_page".$page);
+                $process->name($this->urlconfig['table']."|".$page);
                 $process->start();
                 if($page % $this->worker_num == 0)
                 {
