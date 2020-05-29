@@ -8,30 +8,33 @@ use phpspiderman\tool\Http;
  */
 Class phpspiderman
 {
-    //抓取配置 普通配置 多站点配置
+    // 抓取配置 普通配置 多站点配置
     public $urlconfig = [
-        'index_url' => '',
+        'url' => '',
         'list' => '',
         'content' => '',
-        //采集的是否443端口
-        'ssl' => '443',
+        // 采集的是否443端口
+        'urlport' => '443',
     ];
-    //爬取类型
+    // 爬取类型
     public $typeArr = [
         1 => 'html',
         2 => 'json',
         3 => 'xml',
         4 => 'cms',
     ];
+    // 代表地址
     public $proxyUrl = null;
-    //爬取的类型
+    // 爬取的类型
     public $type = 1;
-    //抓取网站后缀 html
+    // 抓取网站后缀 html
     public $suffix = '';
     // 获取列表页内容
     public $handleList = null;
     // 获取详情页内容
     public $handleContent = null;
+    // 获取详情页所需要的其它内容
+    public $handleContentDetail = null;
     // 采集进程数
     public $worker_num = 4;
     public function __construct($config)
