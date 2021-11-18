@@ -7,7 +7,7 @@ namespace phpsiderman;
 return [
     //mysql配置
     'db' => [
-        'host' => '172.20.0.7',
+        'host' => '172.17.0.5',
         'dbname' => 'phpshow',
         'port' => '3306',
         'username' => 'root',

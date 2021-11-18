@@ -1,6 +1,6 @@
 <?php
 namespace phpspiderman;
-use phpspiderman\tool\Http;
+use phpspiderman\tool\http;
 
 /**
  * 爬虫核心程序
@@ -8,158 +8,125 @@ use phpspiderman\tool\Http;
  */
 Class phpspiderman
 {
-    // 抓取配置 普通配置 多站点配置
-    public $urlconfig = [
-        'url' => '',
-        'list' => '',
-        'content' => '',
-        // 采集的是否443端口
-        'urlport' => '443',
-    ];
-    // 爬取类型
-    public $typeArr = [
-        1 => 'html',
-        2 => 'json',
-        3 => 'xml',
-        4 => 'cms',
-    ];
-    // 代表地址
-    public $proxyUrl = null;
-    // 爬取的类型
-    public $type = 1;
-    // 抓取网站后缀 html
-    public $suffix = '';
     // 获取列表页内容
     public $handleList = null;
+    public $handleListBefore = null;
     // 获取详情页内容
     public $handleContent = null;
+    public $handlefinish = null;
     // 获取详情页所需要的其它内容
     public $handleContentDetail = null;
-    // 采集进程数
-    public $worker_num = 4;
     public function __construct($config)
     {
-        $this->urlconfig = $config;
-        $this->type = $this->urlconfig['type'];
-        if(isset($this->urlconfig['proxyUrl']))
-        {
-            $this->ProxyUrl = $this->urlconfig['proxyUrl'];
-        }
-        if(isset($this->urlconfig['worker_num']))
-        {
-            $this->worker_num = $this->urlconfig['worker_num'];
-        }
-        $this->Http = new Http;
+        $this->config = $config;
+        $this->http = new http;
     }
 
     /**
      * 检查需要的扩展
-     * redis、pcntl、gmp、libevent
      */
     public function check()
     {
-        if(!extension_loaded('posix') || !extension_loaded('pcntl') || !extension_loaded('libevent'))
+        if(!extension_loaded('swoole'))
         {
             //不使用libevent,更新比较小，使用event即可
-            die('请安装必要的扩展[posix|pcntl|libevent]');
+            die('请安装必要的扩展[swoole]');
+        }
+        if(PHP_SAPI != 'cli')
+        {
+            die('只能在php cli的环境下执行');
         }
     }
 
+    public function mysqlinitpool()
+    {
+        $wg = new \Swoole\Coroutine\WaitGroup();
+        $wg->add();
+        go(function() use($wg){
+            $this->pool = new \phpspiderman\tool\MysqlPool($this->config['mysqlconfig'], 20);
+            $wg->done();
+        });
+        $wg->wait();
+    }
+    // public function handleContent(){}
+    // public function handlefinish($spider){ echo '[采集完毕]';}
     /**
      * 开始爬取
      */
     public function crawl()
     {
-        if($this->urlconfig['type'] != 2)
-        {
-            die("目前只支持api json采集!!");
-        }
-        //目前只有类型为type 2 ,即api json模式
-        if($this->ProxyUrl)
-        {
-            $this->Http->setProxy($this->ProxyUrl);
-        }
-        if($this->urlconfig['urlport'])
-        {
-            $this->Http->port = $this->urlconfig['urlport'];
-        }
-        $this->Http->url2 = $this->urlconfig['url'];
-        $header = $this->Http->setHeader($this->urlconfig['url'],$this->urlconfig['cookie']);
-        $json_array = $this->urlconfig['body'];
-        $list = [];
-        \Co\run(function () use($header,&$list,$json_array) {
+        $this->check();
+        \Co\run(function () {
+            $this->http->setUrl($this->config['url']);
+            $params = !empty($this->config['params']) ? $this->config['params'] : $this->config['raw'];
+            $list = [];
             $wg = new \Swoole\Coroutine\WaitGroup();
             $wg->add();
-            go(function() use($header,&$list,$json_array){
-                $list = $this->Http->getContent2($this->urlconfig['list'],$header,$json_array);
+            go(function() use(&$list, $params, $wg){
+                $list = $this->http->getContent($this->config['listpage'], 'post', $params);
+                $wg->done();
             });
             $wg->wait();
-        });
-        $list = \phpspiderman\content\json::decode($list);
-        if($list)
-        {
-            if(!empty($this->urlconfig['totalPageField']))
+            $list = \call_user_func($this->handleListBefore, $this, $list);
+            if($list)
             {
-                $sum_page = $list[$this->urlconfig['totalPageField']];
-            }else{
-                $sum_page = round($list[$this->urlconfig['totalSumField']] / $this->urlconfig['PageSize']);
-            }
-            //从第一页开始采集
-            $page = 1;
-            $sum_page = 6; // 为了测试，这里设定一下
-            while($page<=$sum_page)
-            {
-                $process = new \swoole_process(function() use($header,$page,$sum_page,$json_array){
-                    echo "----------page {$page} / {$sum_page}------------".lr;
-                    $json_array[$this->urlconfig['PageField']] = $page;
-                    \Co\run(function () use($page,$header,$json_array) {
-                        $wg = new \Swoole\Coroutine\WaitGroup();
-                        $wg->add();
-                        go(function() use($wg){
-                            $this->pool = new \phpspiderman\tool\MysqlPool($this->urlconfig['mysqlconfig'],20);
-                            $wg->done();
-                        });
-                        $wg->wait();
-                        $wg->add();
-                        go(function() use($page,$header,$json_array){
-                            $mysql = $this->pool->get();
-                            if($this->handleList)
+                $page = 1;
+                $sum_page = 0;
+                if(!empty($this->config['totalPageField']))
+                {
+                    $sum_page = $this->config['totalPageField'];
+                    if($sum_page == '1')
+                    {
+                        // 自动判断切换ip
+                        $list = \call_user_func($this->handleList, $this, $params);
+                        foreach($list as $listData)
+                        {
+                            if($this->handleContent)
                             {
-                                $list = \call_user_func($this->handleList,$this,$header,$json_array);
-                                foreach($list as $listData)
+                                \call_user_func($this->handleContent, $listData);
+                            }
+                        }
+                    }
+                }else{
+                    if(isset($list[$this->config['totalSumField']]) && isset($this->config['PageSize']))
+                    {
+                        $sum_page = round($list[$this->config['totalSumField']] / $this->config['PageSize']);
+                    }
+                }
+                // $sum_page = 10000; // 为了测试，这里设定一下
+                while($page <= $sum_page)
+                {
+                        echo "----------page {$page} / {$sum_page}------------".lr;
+                        $json_array[$this->config['PageField']] = $page;
+                            $wg = new \Swoole\Coroutine\WaitGroup();
+                            $wg->add();
+                            go(function() use($page, $params, $wg){
+                                $mysql = $this->pool->get();
+                                if($this->handleList)
                                 {
-                                    if($this->handleContent)
+                                    $list = \call_user_func($this->handleList, $this, $params);
+                                    foreach($list as $listData)
                                     {
-                                        $data = \call_user_func($this->handleContent,$listData);
-                                        $arr_key = array_keys($data);
-                                        $arr_value = array_values($data);
-                                        $keyss = implode('`,`',$arr_key);
-                                        $valuess = implode("','",$arr_value);
-                                        //分号模式可能插入有问题
-                                        $sql = "insert into {$this->urlconfig['table']} (`{$keyss}`) values('{$valuess}') ";
-                                        $t = $mysql->query($sql);
-                                        echo  $data['userId']."|{$page}|query return:".$t.lr;
+                                        if($this->handleContent)
+                                        {
+                                            \call_user_func($this->handleContent, $this, $listData);
+                                        }
                                     }
                                 }
-                            }
-                            $this->pool->put($mysql);
-                        });
-                        $wg->wait();
-                    });
+                                $this->pool->put($mysql);
+                                $wg->done();
+                            });
+                            $wg->wait();
                     
-                },false,true);
-                $process->name($this->urlconfig['table']."|".$page);
-                $process->start();
-                if($page % $this->worker_num == 0)
-                {
-                    //重新切换一下ip
-                    $this->Http->transferIp();
-                    echo '-----------------------------------------------------------------';
-                    \swoole_process::wait();
+                        $this->Http->transferIp();
+                    $page++;
                 }
-                $page++;
             }
-            \swoole_process::wait();
-        }
+            if($this->handlefinish)
+            {
+                \call_user_func($this->handeFinish, $this);
+            }
+            echo '[phpspiderman结束]';
+        });
     }
 }
