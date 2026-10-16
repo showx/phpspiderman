@@ -1,0 +1,39 @@
+# 网页采集示例：books.toscrape.com 是专门用来练习抓取的站点。
+# 试跑只翻 1 页：gospider run -c examples/site.yaml -max-pages 1
+name: books
+mode: site
+workers: 4
+timeout: 20s
+retry: 2
+delay: 200ms
+max_depth: 1
+headers:
+  User-Agent: Mozilla/5.0 (compatible; gospider/1.0)
+seeds:
+  - url: https://books.toscrape.com/
+    rule: list
+rules:
+  - name: list
+    # 列表页只负责翻页和发现详情链接，不写记录。
+    links:
+      - css: article.product_pod h3 a
+        attr: href
+        rule: detail
+    next:
+      css: li.next a
+      attr: href
+  - name: detail
+    fields:
+      - name: title
+        css: .product_main h1
+      - name: price
+        css: .product_main .price_color
+      - name: stock
+        css: .product_main .availability
+      - name: description
+        css: "#product_description ~ p"
+      - name: url
+        css: ":url"
+output:
+  format: jsonl
+  path: data/books.jsonl

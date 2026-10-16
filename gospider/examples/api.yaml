@@ -1,0 +1,26 @@
+# JSON 接口示例。这是公开测试接口，可以直接跑：
+#   gospider run -c examples/api.yaml
+name: cat-breeds
+mode: api
+workers: 2
+timeout: 20s
+retry: 2
+delay: 200ms
+request:
+  url: https://catfact.ninja/breeds
+  method: GET
+page:
+  in: query
+  param: page
+  start: 1
+  total_pages: last_page
+list: data
+fields:
+  - name: breed
+  - name: country
+  - name: origin
+  - name: coat
+  - name: pattern
+output:
+  format: jsonl
+  path: data/breeds.jsonl

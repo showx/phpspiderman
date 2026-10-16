@@ -1,3 +1,7 @@
 vendor
 vendor/*
 composer.lock
+.gospider/
+gospider/.gospider/
+gospider/data/
+gospider/gospider
