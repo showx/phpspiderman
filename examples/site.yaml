@@ -1,5 +1,6 @@
-# 网页采集示例：books.toscrape.com 是专门用来练习抓取的站点。
-# 试跑只翻 1 页：gospider run -c examples/site.yaml -max-pages 1
+# 网页采集源。books.toscrape.com 是专门用来练习抓取的站点。
+# ./gospider source add -c examples/site.yaml
+# ./gospider run books -max-pages 1
 name: books
 mode: site
 workers: 4

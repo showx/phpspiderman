@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"gospider/internal/extract"
+	"gospider/internal/httpx"
 )
 
 // Config 是一个任务。mode 为 site（网页）或 api（JSON 接口）。
@@ -24,7 +25,7 @@ type Config struct {
 	Retry        int
 	Delay        time.Duration
 	Headers      map[string]string
-	Proxy        string
+	Proxy        Proxy
 	MaxPages     int
 	MaxDepth     int
 	MaxRequests  int
@@ -99,6 +100,36 @@ type Output struct {
 	Path   string
 }
 
+// Proxy 是固定地址，或从接口、列表里轮换。写成字符串时只表示固定地址。
+type Proxy struct {
+	URL      string   `yaml:"url"`
+	API      string   `yaml:"api"`
+	List     []string `yaml:"list"`
+	Every    int      `yaml:"every"`
+	Scheme   string   `yaml:"scheme"`
+	Username string   `yaml:"username"`
+	Password string   `yaml:"password"`
+}
+
+// UnmarshalYAML 同时接受 `proxy: http://...` 和 `proxy:` 映射。
+func (p *Proxy) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var s string
+		if err := value.Decode(&s); err != nil {
+			return err
+		}
+		*p = Proxy{URL: strings.TrimSpace(s)}
+		return nil
+	}
+	type plain Proxy
+	var raw plain
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*p = Proxy(raw)
+	return nil
+}
+
 type rawConfig struct {
 	Name         string            `yaml:"name"`
 	Mode         string            `yaml:"mode"`
@@ -107,7 +138,7 @@ type rawConfig struct {
 	Retry        *int              `yaml:"retry"`
 	Delay        string            `yaml:"delay"`
 	Headers      map[string]string `yaml:"headers"`
-	Proxy        string            `yaml:"proxy"`
+	Proxy        Proxy             `yaml:"proxy"`
 	MaxPages     int               `yaml:"max_pages"`
 	MaxDepth     *int              `yaml:"max_depth"`
 	MaxRequests  *int              `yaml:"max_requests"`
@@ -194,6 +225,11 @@ func Parse(b []byte) (*Config, error) {
 	return parse(b, "")
 }
 
+// ParseNamed 在 YAML 没有 name 时，用 fallbackName 作为采集源名称。
+func ParseNamed(b []byte, fallbackName string) (*Config, error) {
+	return parse(b, fallbackName)
+}
+
 func parse(b []byte, fallbackName string) (*Config, error) {
 	var raw rawConfig
 	if err := yaml.Unmarshal(b, &raw); err != nil {
@@ -211,7 +247,7 @@ func parse(b []byte, fallbackName string) (*Config, error) {
 		Mode:         strings.ToLower(strings.TrimSpace(raw.Mode)),
 		Workers:      raw.Workers,
 		Headers:      raw.Headers,
-		Proxy:        strings.TrimSpace(raw.Proxy),
+		Proxy:        raw.Proxy,
 		MaxPages:     raw.MaxPages,
 		AllowDomains: raw.AllowDomains,
 		List:         strings.TrimSpace(raw.List),
@@ -398,12 +434,14 @@ func (c *Config) validate() error {
 		c.Output.Format = "jsonl"
 	}
 	switch c.Output.Format {
-	case "jsonl", "csv", "stdout":
+	case "jsonl", "csv", "stdout", "sqlite":
 	default:
-		return fmt.Errorf("不支持的输出格式 %s（可用 jsonl、csv、stdout）", c.Output.Format)
+		return fmt.Errorf("不支持的输出格式 %s（可用 jsonl、csv、stdout、sqlite）", c.Output.Format)
 	}
 	if c.Output.Format == "stdout" {
 		c.Output.Path = "-"
+	} else if c.Output.Format == "sqlite" {
+		c.Output.Path = ""
 	} else if strings.TrimSpace(c.Output.Path) == "" {
 		ext := "jsonl"
 		if c.Output.Format == "csv" {
@@ -412,6 +450,9 @@ func (c *Config) validate() error {
 		c.Output.Path = filepath.Join("data", c.Name+"."+ext)
 	}
 
+	if err := c.validateProxy(); err != nil {
+		return err
+	}
 	switch c.Mode {
 	case "site":
 		return c.validateSite()
@@ -420,6 +461,83 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("mode 必须是 site 或 api")
 	}
+}
+
+func (c *Config) validateProxy() error {
+	p := &c.Proxy
+	p.URL = strings.TrimSpace(p.URL)
+	p.API = strings.TrimSpace(p.API)
+	p.Scheme = strings.ToLower(strings.TrimSpace(p.Scheme))
+	p.Username = strings.TrimSpace(p.Username)
+	var list []string
+	for _, s := range p.List {
+		if s = strings.TrimSpace(s); s != "" {
+			list = append(list, s)
+		}
+	}
+	p.List = list
+	n := 0
+	if p.URL != "" {
+		n++
+	}
+	if p.API != "" {
+		n++
+	}
+	if len(p.List) > 0 {
+		n++
+	}
+	if n > 1 {
+		return fmt.Errorf("代理只选一种：url、api 或 list")
+	}
+	if p.Every < 0 {
+		return fmt.Errorf("proxy.every 不能为负")
+	}
+	if p.Scheme != "" {
+		switch p.Scheme {
+		case "http", "https", "socks5", "socks5h":
+		default:
+			return fmt.Errorf("不支持的代理协议 %s（可用 http、https、socks5）", p.Scheme)
+		}
+	}
+	scheme := p.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	check := func(raw string) error {
+		if _, err := httpx.NormalizeProxy(raw, scheme, p.Username, p.Password); err != nil {
+			return err
+		}
+		return nil
+	}
+	if p.URL != "" {
+		return check(p.URL)
+	}
+	if len(p.List) > 1 && p.Every == 0 {
+		p.Every = 20
+	}
+	var socks *bool
+	for _, raw := range p.List {
+		u, err := httpx.NormalizeProxy(raw, scheme, p.Username, p.Password)
+		if err != nil {
+			return err
+		}
+		s := u.Scheme == "socks5" || u.Scheme == "socks5h"
+		if socks == nil {
+			socks = &s
+		} else if *socks != s {
+			return fmt.Errorf("代理列表不要混用 http 和 socks5")
+		}
+	}
+	if p.API == "" {
+		return nil
+	}
+	if _, err := url.ParseRequestURI(p.API); err != nil || !(strings.HasPrefix(p.API, "http://") || strings.HasPrefix(p.API, "https://")) {
+		return fmt.Errorf("代理接口地址无效")
+	}
+	if p.Every == 0 {
+		p.Every = 20
+	}
+	return nil
 }
 
 func (c *Config) validateSite() error {

@@ -109,6 +109,66 @@ rules:
 	}
 }
 
+func TestProxyStringAndPool(t *testing.T) {
+	cfg, err := Parse([]byte(`
+mode: api
+proxy: http://127.0.0.1:7890
+request:
+  url: https://example.com/list
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proxy.URL != "http://127.0.0.1:7890" || cfg.Proxy.API != "" {
+		t.Fatalf("%+v", cfg.Proxy)
+	}
+
+	cfg, err = Parse([]byte(`
+mode: api
+proxy:
+  api: http://127.0.0.1:5010/get
+  scheme: socks5
+  username: u
+  password: p
+request:
+  url: https://example.com/list
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proxy.API != "http://127.0.0.1:5010/get" || cfg.Proxy.Every != 20 || cfg.Proxy.Scheme != "socks5" {
+		t.Fatalf("%+v", cfg.Proxy)
+	}
+
+	cfg, err = Parse([]byte(`
+mode: api
+proxy:
+  list:
+    - 1.1.1.1:8080
+    - http://2.2.2.2:8080
+  every: 1
+request:
+  url: https://example.com/list
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Proxy.List) != 2 || cfg.Proxy.Every != 1 {
+		t.Fatalf("%+v", cfg.Proxy)
+	}
+
+	if _, err := Parse([]byte(`
+mode: api
+proxy:
+  url: http://127.0.0.1:7890
+  api: http://127.0.0.1:5010/get
+request:
+  url: https://example.com/list
+`)); err == nil {
+		t.Fatal("expected one proxy mode")
+	}
+}
+
 func TestExamples(t *testing.T) {
 	for _, p := range []string{"../../examples/site.yaml", "../../examples/api.yaml"} {
 		if _, err := Load(p); err != nil {

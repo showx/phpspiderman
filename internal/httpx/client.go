@@ -5,13 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 const maxBody = 8 << 20
@@ -25,14 +21,16 @@ type Response struct {
 }
 
 // Client 复用连接，并在网络错误、429、5xx 时重试。
+// 代理池还会在这些失败，以及 403、407 时丢掉当前 IP。
 type Client struct {
 	hc      *http.Client
 	headers map[string]string
 	retry   int
+	px      *gate
 }
 
-// New 创建客户端。proxyURL 支持 http、https、socks5。
-func New(timeout time.Duration, retry int, proxyURL string, headers map[string]string, workers int) (*Client, error) {
+// New 创建客户端。px 为空则直连。
+func New(timeout time.Duration, retry int, px ProxyConfig, headers map[string]string, workers int) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 20 * time.Second
 	}
@@ -42,50 +40,43 @@ func New(timeout time.Duration, retry int, proxyURL string, headers map[string]s
 	if workers < 1 {
 		workers = 1
 	}
-	tr, err := transport(proxyURL, workers)
+	g, err := newGate(px)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
-		hc:      &http.Client{Timeout: timeout, Transport: tr},
-		headers: headers,
-		retry:   retry,
-	}, nil
-}
-
-func transport(proxyURL string, workers int) (*http.Transport, error) {
 	tr := &http.Transport{
-		Proxy:               nil,
 		MaxIdleConns:        max(workers*2, 16),
 		MaxIdleConnsPerHost: max(workers, 8),
 		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
-	if proxyURL == "" {
-		return tr, nil
+	if g != nil {
+		g.bind(tr)
 	}
-	u, err := url.Parse(proxyURL)
-	if err != nil {
-		return nil, fmt.Errorf("代理地址无效: %w", err)
+	return &Client{
+		hc:      &http.Client{Timeout: timeout, Transport: tr},
+		headers: headers,
+		retry:   retry,
+		px:      g,
+	}, nil
+}
+
+// Proxy 返回当前代理，不含账号密码。还没取到时为空。
+func (c *Client) Proxy() string {
+	if c == nil || c.px == nil {
+		return ""
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-		tr.Proxy = http.ProxyURL(u)
-	case "socks5", "socks5h":
-		d, err := proxy.FromURL(u, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("代理地址无效: %w", err)
-		}
-		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if cd, ok := d.(proxy.ContextDialer); ok {
-				return cd.DialContext(ctx, network, addr)
-			}
-			return d.Dial(network, addr)
-		}
-	default:
-		return nil, fmt.Errorf("不支持的代理协议 %s（可用 http、https、socks5）", u.Scheme)
+	return c.px.label()
+}
+
+// OnSwitch 在换到另一条代理时调用，参数不含账号密码。
+func (c *Client) OnSwitch(fn func(string)) {
+	if c == nil || c.px == nil {
+		return
 	}
-	return tr, nil
+	c.px.mu.Lock()
+	c.px.notify = fn
+	c.px.mu.Unlock()
 }
 
 // Do 发起请求。body 为 nil 时不带请求体。extra 覆盖默认请求头。
@@ -103,13 +94,15 @@ func (c *Client) Do(ctx context.Context, method, rawURL string, body []byte, ext
 		resp, err := c.once(ctx, method, rawURL, body, extra)
 		if err != nil {
 			last = err
-		} else if !retryStatus(resp.Status) {
+			c.dropProxy()
+		} else if !c.shouldRetry(resp.Status) {
 			if resp.Status >= 400 {
 				return resp, fmt.Errorf("HTTP %d", resp.Status)
 			}
 			return resp, nil
 		} else {
 			last = fmt.Errorf("HTTP %d", resp.Status)
+			c.dropProxy()
 		}
 		if i+1 < attempts {
 			if err := sleep(ctx, time.Duration(i+1)*300*time.Millisecond); err != nil {
@@ -123,8 +116,20 @@ func (c *Client) Do(ctx context.Context, method, rawURL string, body []byte, ext
 	return nil, last
 }
 
-func retryStatus(code int) bool {
-	return code == http.StatusTooManyRequests || code >= 500
+func (c *Client) dropProxy() {
+	if c.px != nil {
+		c.px.invalidate()
+	}
+}
+
+func (c *Client) shouldRetry(code int) bool {
+	if code == http.StatusTooManyRequests || code >= 500 {
+		return true
+	}
+	if c.px != nil && c.px.rotates() && (code == http.StatusForbidden || code == http.StatusProxyAuthRequired) {
+		return true
+	}
+	return false
 }
 
 func (c *Client) once(ctx context.Context, method, rawURL string, body []byte, extra map[string]string) (*Response, error) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gospider/internal/job"
+	"gospider/internal/store"
 )
 
 func TestRunAndPS(t *testing.T) {
@@ -42,7 +43,7 @@ func TestRunAndPS(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	t.Setenv("GOSPIDER_HOME", filepath.Join(dir, "home"))
+	t.Setenv("GOSPIDER_DB", filepath.Join(dir, "gospider.db"))
 	out := filepath.Join(dir, "out.jsonl")
 	cfgPath := filepath.Join(dir, "task.yaml")
 	body := strings.ReplaceAll(`
@@ -104,11 +105,26 @@ output:
 	if !strings.Contains(stdout.String(), "cli-demo") || !strings.Contains(stdout.String(), "完成") {
 		t.Fatalf("ps -a=%s", stdout.String())
 	}
+	stdout.Reset()
+	if code := Run([]string{"source", "list"}); code != 0 {
+		t.Fatal(code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cli-demo") {
+		t.Fatalf("sources=%s", stdout.String())
+	}
+	stdout.Reset()
+	if code := Run([]string{"records", "cli-demo", "-n", "10"}); code != 0 {
+		t.Fatal(code, stderr.String())
+	}
+	if strings.Count(stdout.String(), "\n") != 3 {
+		t.Fatalf("records=%s", stdout.String())
+	}
 }
 
 func TestStopSleep(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("GOSPIDER_HOME", home)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gospider.db")
+	t.Setenv("GOSPIDER_DB", dbPath)
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -117,7 +133,11 @@ func TestStopSleep(t *testing.T) {
 		_ = cmd.Process.Kill()
 	})
 	id := "stopme01"
-	if err := job.Save(job.Snapshot{
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveJob(job.Snapshot{
 		ID:        id,
 		Name:      "sleep",
 		PID:       cmd.Process.Pid,
@@ -126,6 +146,7 @@ func TestStopSleep(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	_ = db.Close()
 	var stdout, stderr bytes.Buffer
 	oldOut, oldErr := Stdout, Stderr
 	Stdout, Stderr = &stdout, &stderr

@@ -1,7 +1,4 @@
-vendor
-vendor/*
-composer.lock
-.gospider/
-gospider/.gospider/
-gospider/data/
-gospider/gospider
+gospider.db
+gospider.db-wal
+gospider.db-shm
+data/

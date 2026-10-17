@@ -56,6 +56,9 @@ func live(s job.Snapshot) string {
 	fmt.Fprintf(&b, "状态  %s    耗时 %s    速度 %s\n", job.StatusText(s.Status, true), job.FormatDuration(el), job.Rate(s.Success+s.Failed, el))
 	fmt.Fprintf(&b, "进度  %s\n", job.Progress(s))
 	fmt.Fprintf(&b, "请求  成功 %d    失败 %d    条目 %d    队列 %d\n", s.Success, s.Failed, s.Items, s.Queued)
+	if s.Proxy != "" {
+		fmt.Fprintf(&b, "代理  %s\n", s.Proxy)
+	}
 	cur := s.Current
 	if cur == "" {
 		cur = "-"
@@ -75,6 +78,9 @@ func summary(s job.Snapshot) string {
 	fmt.Fprintf(&b, "进度  %s\n", job.Progress(s))
 	fmt.Fprintf(&b, "请求  成功 %d    失败 %d    条目 %d\n", s.Success, s.Failed, s.Items)
 	fmt.Fprintf(&b, "耗时  %s    速度 %s\n", job.FormatDuration(el), job.Rate(s.Success+s.Failed, el))
+	if s.Proxy != "" {
+		fmt.Fprintf(&b, "代理  %s\n", s.Proxy)
+	}
 	if s.Output != "" && s.Output != "-" {
 		fmt.Fprintf(&b, "输出  %s\n", s.Output)
 	}
@@ -86,6 +92,10 @@ func summary(s job.Snapshot) string {
 }
 
 func oneLine(s job.Snapshot) string {
-	return fmt.Sprintf("%s  %s  %s  成功 %d  失败 %d  条目 %d",
+	line := fmt.Sprintf("%s  %s  %s  成功 %d  失败 %d  条目 %d",
 		s.Name, job.StatusText(s.Status, true), job.Progress(s), s.Success, s.Failed, s.Items)
+	if s.Proxy != "" {
+		line += "  代理 " + s.Proxy
+	}
+	return line
 }

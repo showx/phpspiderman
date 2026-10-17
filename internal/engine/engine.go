@@ -15,8 +15,12 @@ import (
 	"gospider/internal/config"
 	"gospider/internal/extract"
 	"gospider/internal/httpx"
-	"gospider/internal/output"
 )
+
+// Sink 接收一条采集结果。文件和 SQLite 都实现它。
+type Sink interface {
+	Write(item map[string]any) error
+}
 
 // Stats 是采集过程中的计数，供界面刷新。
 type Stats struct {
@@ -26,13 +30,14 @@ type Stats struct {
 	Queued                 int64
 	Current                string
 	LastError              string
+	Proxy                  string
 }
 
 // Engine 执行一个任务。
 type Engine struct {
 	cfg      *config.Config
 	client   *httpx.Client
-	out      *output.Writer
+	out      Sink
 	rules    map[string]config.Rule
 	allow    map[string]struct{}
 	allowAll bool
@@ -83,7 +88,7 @@ type task struct {
 }
 
 // New 按配置准备采集器。
-func New(cfg *config.Config, out *output.Writer) (*Engine, error) {
+func New(cfg *config.Config, out Sink) (*Engine, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("缺少配置")
 	}
@@ -93,7 +98,15 @@ func New(cfg *config.Config, out *output.Writer) (*Engine, error) {
 	if out == nil {
 		return nil, fmt.Errorf("未设置输出")
 	}
-	client, err := httpx.New(cfg.Timeout, cfg.Retry, cfg.Proxy, cfg.Headers, cfg.Workers)
+	client, err := httpx.New(cfg.Timeout, cfg.Retry, httpx.ProxyConfig{
+		URL:      cfg.Proxy.URL,
+		API:      cfg.Proxy.API,
+		List:     cfg.Proxy.List,
+		Every:    cfg.Proxy.Every,
+		Scheme:   cfg.Proxy.Scheme,
+		Username: cfg.Proxy.Username,
+		Password: cfg.Proxy.Password,
+	}, cfg.Headers, cfg.Workers)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +120,11 @@ func New(cfg *config.Config, out *output.Writer) (*Engine, error) {
 		seen:     map[string]struct{}{},
 		bodySeen: map[[32]byte]struct{}{},
 	}
+	e.client.OnSwitch(func(p string) {
+		if e.Log != nil {
+			e.Log("代理 " + p)
+		}
+	})
 	e.q.wake = make(chan struct{}, 1)
 	e.current.Store("")
 	e.lastErr.Store("")
@@ -153,6 +171,7 @@ func (e *Engine) Stats() Stats {
 		Queued:    int64(e.q.len()),
 		Current:   cur,
 		LastError: last,
+		Proxy:     e.client.Proxy(),
 	}
 }
 

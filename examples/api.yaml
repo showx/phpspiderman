@@ -1,5 +1,6 @@
-# JSON 接口示例。这是公开测试接口，可以直接跑：
-#   gospider run -c examples/api.yaml
+# JSON 接口采集源。这是公开测试接口。
+# ./gospider source add -c examples/api.yaml
+# ./gospider run cat-breeds
 name: cat-breeds
 mode: api
 workers: 2

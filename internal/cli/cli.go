@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"gospider/internal/engine"
 	"gospider/internal/job"
 	"gospider/internal/output"
+	"gospider/internal/store"
 )
 
 // Stdout 和 Stderr 可以在测试里换成缓冲区。
@@ -27,20 +29,18 @@ var (
 	Stderr io.Writer = os.Stderr
 )
 
-const usageText = `gospider 是一个直接上手的采集工具。
+const usageText = `gospider 把采集源和结果放在 SQLite 里。
 
 用法:
-  gospider run -c 任务.yaml          开始采集，终端里看进度
-  gospider run -c 任务.yaml -max-pages 1
-  gospider ps                         查看正在采集的进程
-  gospider ps -a                      连同已结束的任务一起看
-  gospider stop 任务编号              停止一个任务
-  gospider log 任务编号               查看这个任务的错误日志
+  gospider source add -c 任务.yaml     登记一个采集源
+  gospider source list                  查看采集源
+  gospider run 名称                     按采集源开始采集
+  gospider run -c 任务.yaml             登记并立刻采集
+  gospider ps                           查看正在采集的进程
+  gospider records 名称                 查看已采集的记录
+  gospider export 名称 -o 文件.jsonl    把记录导出成文件
 
-试跑网页示例:
-  go run ./cmd/gospider run -c examples/site.yaml -max-pages 1
-
-进度写在当前目录的 .gospider/ 里，所以要在同一个目录下执行 ps。
+数据库默认是当前目录的 gospider.db，可用环境变量 GOSPIDER_DB 指定。
 `
 
 // Run 执行命令，返回进程退出码。
@@ -50,6 +50,8 @@ func Run(args []string) int {
 		return 0
 	}
 	switch args[0] {
+	case "source":
+		return sourceCmd(args[1:])
 	case "run":
 		return run(args[1:])
 	case "ps", "status":
@@ -58,6 +60,10 @@ func Run(args []string) int {
 		return stop(args[1:])
 	case "log":
 		return logCmd(args[1:])
+	case "records":
+		return recordsCmd(args[1:])
+	case "export":
+		return exportCmd(args[1:])
 	default:
 		fmt.Fprintf(Stderr, "未知命令 %s\n\n", args[0])
 		fmt.Fprint(Stderr, usageText)
@@ -65,57 +71,128 @@ func Run(args []string) int {
 	}
 }
 
+func openDB() (*store.Store, error) {
+	return store.Open(store.DefaultPath())
+}
+
+// reorder 让名称和开关谁先写都可以，例如 records books -n 5。
+func reorder(args []string, valued map[string]bool) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			flags = append(flags, a)
+			if _, _, ok := strings.Cut(a, "="); ok {
+				continue
+			}
+			if valued[strings.TrimLeft(a, "-")] && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		pos = append(pos, a)
+	}
+	return append(flags, pos...)
+}
+
 func run(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(Stderr)
-	cfgPath := fs.String("c", "", "任务配置文件")
+	cfgPath := fs.String("c", "", "从这份 YAML 登记采集源并立刻运行")
 	quiet := fs.Bool("q", false, "不刷新画面，隔几秒打一行")
 	maxPages := fs.Int("max-pages", -1, "这次最多抓多少页（含入口），1 表示不翻页")
 	fs.Usage = func() {
-		fmt.Fprint(Stderr, "用法: gospider run -c 任务.yaml [-max-pages 1] [-q]\n")
+		fmt.Fprint(Stderr, "用法: gospider run 名称 [-max-pages 1] [-q]\n      gospider run -c 任务.yaml\n")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorder(args, map[string]bool{"c": true, "max-pages": true})); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	if *cfgPath == "" {
-		fmt.Fprintln(Stderr, "请用 -c 指定配置文件")
-		fs.Usage()
-		return 2
-	}
-	cfg, err := config.Load(*cfgPath)
+
+	db, err := openDB()
 	if err != nil {
-		fmt.Fprintf(Stderr, "配置错误: %v\n", err)
+		fmt.Fprintf(Stderr, "打开数据库失败: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+
+	var raw []byte
+	var cfg *config.Config
+	switch {
+	case *cfgPath != "" && fs.NArg() > 0:
+		fmt.Fprintln(Stderr, "请只指定采集源名称，或只用 -c")
+		return 2
+	case *cfgPath != "":
+		raw, err = os.ReadFile(*cfgPath)
+		if err != nil {
+			fmt.Fprintf(Stderr, "读取配置: %v\n", err)
+			return 2
+		}
+		cfg, err = config.ParseNamed(raw, strings.TrimSuffix(filepath.Base(*cfgPath), filepath.Ext(*cfgPath)))
+		if err != nil {
+			fmt.Fprintf(Stderr, "配置错误: %v\n", err)
+			return 2
+		}
+		if err := db.UpsertSource(cfg.Name, cfg.Mode, string(raw)); err != nil {
+			fmt.Fprintf(Stderr, "保存采集源失败: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(Stderr, "采集源 %s\n", cfg.Name)
+	case fs.NArg() == 1:
+		src, err := db.Source(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintln(Stderr, err.Error())
+			return 1
+		}
+		cfg, err = config.ParseNamed([]byte(src.Config), src.Name)
+		if err != nil {
+			fmt.Fprintf(Stderr, "采集源配置已损坏: %v\n", err)
+			return 1
+		}
+	default:
+		fs.Usage()
 		return 2
 	}
 	if *maxPages >= 0 {
 		cfg.MaxPages = *maxPages
 	}
-	out, err := output.New(cfg.Output.Format, cfg.Output.Path, cfg.Columns())
-	if err != nil {
-		fmt.Fprintf(Stderr, "输出错误: %v\n", err)
-		return 1
-	}
-	defer out.Close()
 
-	eng, err := engine.New(cfg, out)
+	var fileOut *output.Writer
+	if cfg.Output.Format != "sqlite" {
+		fileOut, err = output.New(cfg.Output.Format, cfg.Output.Path, cfg.Columns())
+		if err != nil {
+			fmt.Fprintf(Stderr, "输出错误: %v\n", err)
+			return 1
+		}
+		defer fileOut.Close()
+	}
+
+	id := job.NewID()
+	sink := &store.RecordSink{DB: db, Source: cfg.Name, JobID: id}
+	if fileOut != nil {
+		sink.File = fileOut
+	}
+	eng, err := engine.New(cfg, sink)
 	if err != nil {
 		fmt.Fprintf(Stderr, "启动失败: %v\n", err)
 		return 1
 	}
-	id := job.NewID()
 	eng.Log = func(msg string) {
-		_ = job.AppendLog(id, msg)
+		_ = db.AppendLog(id, msg)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	progress := Stderr
-	view := &View{w: progress, tty: isTTY(progress), quiet: *quiet}
+	view := &View{w: Stderr, tty: isTTY(Stderr), quiet: *quiet}
 	var saveMu sync.Mutex
 	snap := func(status string) job.Snapshot {
 		st := eng.Stats()
@@ -134,6 +211,10 @@ func run(args []string) int {
 			Current:   st.Current,
 			LastError: st.LastError,
 			Output:    cfg.Output.Path,
+			Proxy:     st.Proxy,
+		}
+		if s.Output == "" {
+			s.Output = db.Path
 		}
 		if s.StartedAt.IsZero() {
 			s.StartedAt = time.Now()
@@ -144,7 +225,7 @@ func run(args []string) int {
 		saveMu.Lock()
 		defer saveMu.Unlock()
 		s := snap(status)
-		_ = job.Save(s)
+		_ = db.SaveJob(s)
 		return s
 	}
 
@@ -189,23 +270,27 @@ func ps(args []string) int {
 	fs := flag.NewFlagSet("ps", flag.ContinueOnError)
 	fs.SetOutput(Stderr)
 	all := fs.Bool("a", false, "包含已结束的任务")
-	fs.Usage = func() {
-		fmt.Fprintln(Stderr, "用法: gospider ps [-a]")
-	}
+	fs.Usage = func() { fmt.Fprintln(Stderr, "用法: gospider ps [-a]") }
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	list, err := job.List()
+	db, err := openDB()
+	if err != nil {
+		fmt.Fprintf(Stderr, "打开数据库失败: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+	list, err := db.Jobs()
 	if err != nil {
 		fmt.Fprintf(Stderr, "读取进度失败: %v\n", err)
 		return 1
 	}
 	var rows []job.Snapshot
 	for _, s := range list {
-		s = markLost(s)
+		s = markLost(db, s)
 		if !*all && s.Status != "running" {
 			continue
 		}
@@ -227,6 +312,11 @@ func ps(args []string) int {
 		}
 		return 0
 	}
+	printJobs(rows)
+	return 0
+}
+
+func printJobs(rows []job.Snapshot) {
 	limit := len(rows)
 	if limit > 40 {
 		limit = 40
@@ -254,7 +344,6 @@ func ps(args []string) int {
 	if len(rows) > limit {
 		fmt.Fprintf(Stdout, "还有 %d 条更早的任务没有列出\n", len(rows)-limit)
 	}
-	return 0
 }
 
 func stop(args []string) int {
@@ -271,12 +360,18 @@ func stop(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	s, err := job.Resolve(fs.Arg(0))
+	db, err := openDB()
+	if err != nil {
+		fmt.Fprintf(Stderr, "打开数据库失败: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+	s, err := db.ResolveJob(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(Stderr, err.Error())
 		return 1
 	}
-	s = markLost(s)
+	s = markLost(db, s)
 	if s.Status != "running" || !job.Alive(s.PID) {
 		fmt.Fprintf(Stdout, "任务 %s 没有在运行（%s）\n", s.ID, job.StatusText(s.Status, false))
 		return 0
@@ -303,31 +398,37 @@ func logCmd(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	s, err := job.Resolve(fs.Arg(0))
+	db, err := openDB()
+	if err != nil {
+		fmt.Fprintf(Stderr, "打开数据库失败: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+	s, err := db.ResolveJob(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(Stderr, err.Error())
 		return 1
 	}
-	b, err := os.ReadFile(job.LogPath(s.ID))
+	text, ok, err := db.Logs(s.ID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintln(Stdout, "暂无错误日志")
-			return 0
-		}
 		fmt.Fprintf(Stderr, "读取日志失败: %v\n", err)
 		return 1
 	}
-	fmt.Fprint(Stdout, string(b))
+	if !ok {
+		fmt.Fprintln(Stdout, "暂无错误日志")
+		return 0
+	}
+	fmt.Fprint(Stdout, text)
 	return 0
 }
 
-func markLost(s job.Snapshot) job.Snapshot {
+func markLost(db *store.Store, s job.Snapshot) job.Snapshot {
 	if s.Status == "running" && !job.Alive(s.PID) {
 		s.Status = "lost"
 		if s.LastError == "" {
 			s.LastError = "进程已不在"
 		}
-		_ = job.Save(s)
+		_ = db.SaveJob(s)
 	}
 	return s
 }
